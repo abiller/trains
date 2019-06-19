@@ -166,7 +166,7 @@ imshow(content_img, title='Content Image')
 # computed at the desired layers and because of auto grad, all the
 # gradients will be computed. Now, in order to make the content loss layer
 # transparent we must define a ``forward`` method that computes the content
-# loss and then returns the layer’s input. The computed loss is saved as a
+# loss and then returns the layer's input. The computed loss is saved as a
 # parameter of the module.
 #
 
@@ -256,7 +256,7 @@ class StyleLoss(nn.Module):
 # Now we need to import a pre-trained neural network. We will use a 19
 # layer VGG network like the one used in the paper.
 #
-# PyTorch’s implementation of VGG is a module divided into two child
+# PyTorch's implementation of VGG is a module divided into two child
 # ``Sequential`` modules: ``features`` (containing convolution and pooling layers),
 # and ``classifier`` (containing fully connected layers). We will use the
 # ``features`` module because we need the output of the individual
@@ -296,7 +296,7 @@ class Normalization(nn.Module):
 ######################################################################
 # A ``Sequential`` module contains an ordered list of child modules. For
 # instance, ``vgg19.features`` contains a sequence (Conv2d, ReLU, MaxPool2d,
-# Conv2d, ReLU…) aligned in the right order of depth. We need to add our
+# Conv2d, ReLU...) aligned in the right order of depth. We need to add our
 # content loss and style loss layers immediately after the convolution
 # layer they are detecting. To do this we must create a new ``Sequential``
 # module that has content loss and style loss modules correctly inserted.
@@ -404,7 +404,7 @@ def get_input_optimizer(input_img):
 # Finally, we must define a function that performs the neural transfer. For
 # each iteration of the networks, it is fed an updated input and computes
 # new losses. We will run the ``backward`` methods of each loss module to
-# dynamicaly compute their gradients. The optimizer requires a “closure”
+# dynamicaly compute their gradients. The optimizer requires a "closure"
 # function, which reevaluates the modul and returns the loss.
 #
 # We still have one final constraint to address. The network may try to

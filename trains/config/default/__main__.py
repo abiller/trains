@@ -1,6 +1,9 @@
+from __future__ import print_function
+
+from six.moves import input
 from pyhocon import ConfigFactory
 from pathlib2 import Path
-from six.moves.urllib.parse import urlparse, urlunparse
+from six.moves.urllib.parse import urlparse
 
 from trains.backend_api.session.defs import ENV_HOST
 from trains.backend_config.defs import LOCAL_CONFIG_FILES
@@ -8,9 +11,10 @@ from trains.config import config_obj
 
 
 description = """
-Please create new key/secrete credentials using {}/admin
+Please create new credentials using the web app: {}/admin
+In the Admin page, press "Create new credentials", then press "Copy to clipboard"
 
-Copy/Paste credentials here: """
+Paste credentials here: """
 
 try:
     def_host = ENV_HOST.get(default=config_obj.get("api.host"))
@@ -19,7 +23,7 @@ except Exception:
 
 host_description = """
 Editing configuration file: {CONFIG_FILE}
-Enter your trains-server host [{HOST}]: """.format(
+Enter the url of the trains-server's api service, example: http://localhost:8008 or default demo server [{HOST}]: """.format(
     CONFIG_FILE=LOCAL_CONFIG_FILES[0],
     HOST=def_host,
 )
@@ -39,6 +43,7 @@ def main():
         parse_input = input()
         if not parse_input:
             parse_input = def_host
+        # noinspection PyBroadException
         try:
             if not parse_input.startswith('http://') and not parse_input.startswith('https://'):
                 parse_input = 'http://'+parse_input
@@ -95,6 +100,7 @@ def main():
     parse_input = input()
     # check if these are valid credentials
     credentials = None
+    # noinspection PyBroadException
     try:
         parsed = ConfigFactory.parse_string(parse_input)
         if parsed:
@@ -113,7 +119,7 @@ def main():
 
     print('Detected credentials key=\"{}\" secret=\"{}\"'.format(credentials['access_key'],
                                                                  credentials['secret_key'], ))
-
+    # noinspection PyBroadException
     try:
         default_sdk_conf = Path(__file__).parent.absolute() / 'sdk.conf'
         with open(str(default_sdk_conf), 'rt') as f:
@@ -121,7 +127,7 @@ def main():
     except Exception:
         print('Error! Could not read default configuration file')
         return
-
+    # noinspection PyBroadException
     try:
         with open(str(conf_file), 'wt') as f:
             header = '# TRAINS SDK configuration file\n' \

@@ -1,40 +1,40 @@
 import atexit
 import os
+import signal
 import sys
 import threading
 import time
-import warnings
 from argparse import ArgumentParser
 from collections import OrderedDict, Callable
 
 import psutil
 import six
-from .backend_api.services import tasks, projects
 from six.moves._thread import start_new_thread
 
+from .backend_api.services import tasks, projects
 from .backend_interface import TaskStatusEnum
 from .backend_interface.model import Model as BackendModel
+from .backend_interface.task import Task as _Task
 from .backend_interface.task.args import _Arguments
 from .backend_interface.task.development.stop_signal import TaskStopSignal
 from .backend_interface.task.development.worker import DevWorker
-from .backend_interface.task.repo import pip_freeze, ScriptInfo
+from .backend_interface.task.repo import ScriptInfo
 from .backend_interface.util import get_single_result, exact_match_regex, make_message
 from .config import config, PROC_MASTER_ID_ENV_VAR
-from .debugging.log import LoggerRoot
-from .errors import UsageError
-from .task_parameters import TaskParameters
-from .utilities.args import argparser_parseargs_called, get_argparser_last_args, \
-    argparser_update_currenttask
-from .utilities.matplotlib_bind import PatchedMatplotlib
-from .utilities.seed import make_deterministic
-from .utilities.absl_bind import PatchAbsl
-from .utilities.frameworks import PatchSummaryToEventTransformer, PatchModelCheckPointCallback, \
-    PatchTensorFlowEager, PatchKerasModelIO, PatchTensorflowModelIO, PatchPyTorchModelIO
-from .backend_interface.task import Task as _Task
 from .config import running_remotely, get_remote_task_id
 from .config.cache import SessionCache
+from .debugging.log import LoggerRoot
+from .errors import UsageError
 from .logger import Logger
 from .model import InputModel, OutputModel, ARCHIVED_TAG
+from .task_parameters import TaskParameters
+from .utilities.absl_bind import PatchAbsl
+from .utilities.args import argparser_parseargs_called, get_argparser_last_args, \
+    argparser_update_currenttask
+from .utilities.frameworks import PatchSummaryToEventTransformer, PatchTensorFlowEager, PatchKerasModelIO, \
+    PatchTensorflowModelIO, PatchPyTorchModelIO
+from .utilities.matplotlib_bind import PatchedMatplotlib
+from .utilities.seed import make_deterministic
 
 NotSet = object()
 
@@ -122,7 +122,6 @@ class Task(_Task):
         output_uri=None,
         auto_connect_arg_parser=True,
         auto_connect_frameworks=True,
-        **kwargs
     ):
         """
         Return the Task object for the main execution task (task context).
@@ -186,9 +185,7 @@ class Task(_Task):
         if task_type is None:
             # Backwards compatibility: if called from Task.current_task and task_type
             # was not specified, keep legacy default value of TaskTypes.training
-            __from_current_task = kwargs.pop("__from_current_task", False)
-            if __from_current_task:
-                task_type = cls.TaskTypes.training
+            task_type = cls.TaskTypes.training
 
         try:
             if not running_remotely():
@@ -406,6 +403,8 @@ class Task(_Task):
                 task.id,
             ),
         )
+        # make sure everything is in sync
+        task.reload()
         # make sure we see something in the UI
         threading.Thread(target=LoggerRoot.flush).start()
         return task
@@ -814,7 +813,8 @@ class Task(_Task):
             self._dev_worker.unregister()
 
         # NOTICE! This will end the entire execution tree!
-        self.__exit_hook.remote_user_aborted = True
+        if self.__exit_hook:
+            self.__exit_hook.remote_user_aborted = True
         self._kill_all_child_processes(send_kill=False)
         time.sleep(2.0)
         self._kill_all_child_processes(send_kill=True)
@@ -925,13 +925,13 @@ class Task(_Task):
                 self.log.info('Waiting to finish uploads')
                 print_done_waiting = True
             # from here, do not send log in background thread
-            self._logger.set_flush_period(None)
             if wait_for_uploads:
                 self.flush(wait_for_uploads=True)
                 if print_done_waiting:
                     self.log.info('Finished uploading')
             else:
                 self._logger._flush_stdout_handler()
+            self._logger.set_flush_period(None)
             # this is so in theory we can close a main task and start a new one
             Task.__main_task = None
         except Exception:
@@ -951,10 +951,15 @@ class Task(_Task):
                 self.signal = None
                 self._exit_callback = callback
                 self._org_handlers = {}
+                self._signal_recursion_protection_flag = False
+                self._except_recursion_protection_flag = False
 
             def update_callback(self, callback):
-                if self._exit_callback:
-                    atexit.unregister(self._exit_callback)
+                if self._exit_callback and not six.PY2:
+                    try:
+                        atexit.unregister(self._exit_callback)
+                    except Exception:
+                        pass
                 self._exit_callback = callback
                 atexit.register(self._exit_callback)
 
@@ -966,9 +971,12 @@ class Task(_Task):
                     self._orig_exc_handler = sys.excepthook
                 sys.excepthook = self.exc_handler
                 atexit.register(self._exit_callback)
-                import signal
-                catch_signals = [signal.SIGINT, signal.SIGTERM, signal.SIGSEGV, signal.SIGABRT,
-                                 signal.SIGILL, signal.SIGFPE, signal.SIGQUIT]
+                if sys.platform == 'win32':
+                    catch_signals = [signal.SIGINT, signal.SIGTERM, signal.SIGSEGV, signal.SIGABRT,
+                                     signal.SIGILL, signal.SIGFPE]
+                else:
+                    catch_signals = [signal.SIGINT, signal.SIGTERM, signal.SIGSEGV, signal.SIGABRT,
+                                     signal.SIGILL, signal.SIGFPE, signal.SIGQUIT]
                 for s in catch_signals:
                     # noinspection PyBroadException
                     try:
@@ -982,16 +990,52 @@ class Task(_Task):
                 self._orig_exit(code)
 
             def exc_handler(self, exctype, value, traceback, *args, **kwargs):
+                if self._except_recursion_protection_flag:
+                    return sys.__excepthook__(exctype, value, traceback, *args, **kwargs)
+
+                self._except_recursion_protection_flag = True
                 self.exception = value
-                return self._orig_exc_handler(exctype, value, traceback, *args, **kwargs)
+                if self._orig_exc_handler:
+                    ret = self._orig_exc_handler(exctype, value, traceback, *args, **kwargs)
+                else:
+                    ret = sys.__excepthook__(exctype, value, traceback, *args, **kwargs)
+                self._except_recursion_protection_flag = False
+
+                return ret
 
             def signal_handler(self, sig, frame):
+                if self._signal_recursion_protection_flag:
+                    # call original
+                    org_handler = self._org_handlers.get(sig)
+                    if isinstance(org_handler, Callable):
+                        org_handler = org_handler(sig, frame)
+                    return org_handler
+
+                self._signal_recursion_protection_flag = True
+                # call exit callback
                 self.signal = sig
                 if self._exit_callback:
-                    self._exit_callback()
-                org_handler = self._org_handlers[sig]
+                    # noinspection PyBroadException
+                    try:
+                        self._exit_callback()
+                    except Exception:
+                        pass
+                # call original signal handler
+                org_handler = self._org_handlers.get(sig)
                 if isinstance(org_handler, Callable):
-                    return org_handler(sig, frame)
+                    # noinspection PyBroadException
+                    try:
+                        org_handler = org_handler(sig, frame)
+                    except Exception:
+                        org_handler = signal.SIG_DFL
+                # remove stdout logger, just in case
+                # noinspection PyBroadException
+                try:
+                    Logger._remove_std_logger()
+                except Exception:
+                    pass
+                self._signal_recursion_protection_flag = False
+                # return handler result
                 return org_handler
 
         if cls.__exit_hook is None:
